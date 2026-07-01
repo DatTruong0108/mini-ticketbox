@@ -10,6 +10,7 @@ import {
 } from './dto/tickets.dto.js';
 
 import { HoldTicketData, CancelTicketData, PaymentResultData } from './interfaces/tickets.interface.js';
+import { TicketsGateway } from './tickets.gateway.js';
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -36,6 +37,7 @@ export class TicketsService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
+    private readonly ticketsGateway: TicketsGateway,
   ) { }
 
   // ─── Lifecycle ──────────────────────────────────────────────────
@@ -65,6 +67,9 @@ export class TicketsService implements OnModuleInit {
       this.logger.log(
         `Ticket pool initialised from DB: ${availableCount} tickets available`,
       );
+
+      // Seed the initial count into the websocket gateway
+      this.ticketsGateway.queueCountUpdate(availableCount);
 
       // 3. Register the expiration handler (fires when ticket_hold:{id} key expires)
       this.redisService.registerExpirationHandler((ticketId: string) => {
@@ -106,7 +111,10 @@ export class TicketsService implements OnModuleInit {
       // Step 2: Check if tickets are still available
       if (remaining < 0) {
         // Restore the pool immediately — this request didn't get a slot
-        await this.redisService.incrementPool();
+        const restoreResult = await this.redisService.incrementPool();
+        if (restoreResult.isOk()) {
+          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+        }
         return Err(new Error('Tickets Sold Out'));
       }
 
@@ -117,7 +125,10 @@ export class TicketsService implements OnModuleInit {
 
       if (!ticket) {
         // Edge case: pool said yes, but no matching DB row (type mismatch / data drift)
-        await this.redisService.incrementPool();
+        const restoreResult = await this.redisService.incrementPool();
+        if (restoreResult.isOk()) {
+          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+        }
         return Err(
           new Error(
             `No available ${ticketType} ticket found. Please try a different type.`,
@@ -163,6 +174,9 @@ export class TicketsService implements OnModuleInit {
         `Ticket ${updatedTicket.id} (${ticketType}) held by user ${userId} — expires at ${formattedExpiresAt}`,
       );
 
+      // Queue the new count (remaining) to be broadcast
+      this.ticketsGateway.queueCountUpdate(remaining);
+
       return Ok({
         id: updatedTicket.id,
         type: updatedTicket.type as TicketTypeEnum,
@@ -175,7 +189,10 @@ export class TicketsService implements OnModuleInit {
       this.logger.error(`holdTicket failed: ${error}`);
       // Attempt to restore the pool on any unexpected failure
       try {
-        await this.redisService.incrementPool();
+        const restoreResult = await this.redisService.incrementPool();
+        if (restoreResult.isOk()) {
+          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+        }
       } catch (restoreErr) {
         this.logger.error(`Failed to restore pool after error: ${restoreErr}`);
       }
@@ -246,6 +263,8 @@ export class TicketsService implements OnModuleInit {
         this.logger.error(
           `Failed to increment Redis pool after cancel: ${incrResult.unwrapErr().message}`,
         );
+      } else {
+        this.ticketsGateway.queueCountUpdate(incrResult.unwrap());
       }
 
       this.logger.log(
@@ -403,6 +422,8 @@ export class TicketsService implements OnModuleInit {
         this.logger.error(
           `Expiration handler: failed to increment pool for ticket ${ticketId}: ${incrResult.unwrapErr().message}`,
         );
+      } else {
+        this.ticketsGateway.queueCountUpdate(incrResult.unwrap());
       }
 
       this.logger.log(
