@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ------------------------------------------------------
+// BẢNG USER: Quản lý người dùng
+// ------------------------------------------------------
+model User {
+  id       String  @id @default(uuid())
+  userName String  @unique @db.VarChar(255)
+  role     Role    @default(USER)
+
+  // Relations
+  orders   Order[]
+  tickets  Ticket[]
+
+  @@map("users")
+}
+
+// ------------------------------------------------------
+// BẢNG TICKET: Trọng tâm của bài toán Concurrency
+// ------------------------------------------------------
+model Ticket {
+  id        String       @id @default(uuid())
+  type      TicketType   
+  price     Int
+  status    TicketStatus @default(AVAILABLE)
+  
+  // Tracking luồng giữ vé 5 phút
+  userId    String?
+  expiresAt DateTime?    
+  orderId   String?      
+
+  // Relations
+  user      User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  order     Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([status]) 
+  @@map("tickets")
+}
+
+// ------------------------------------------------------
+// BẢNG ORDER: Lưu trữ giao dịch thanh toán
+// ------------------------------------------------------
+model Order {
+  id         String      @id @default(uuid())
+  userId     String
+  totalPrice Int
+  status     OrderStatus @default(PENDING)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  // Relations
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tickets    Ticket[]
+
+  @@map("orders")
+}
+
+// ------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------
+enum TicketStatus {
+  AVAILABLE
+  HOLD
+  SOLD
+}
+
+enum TicketType {
+  STANDARD
+  VIP
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELLED
+}
+
+enum Role {
+  USER
+  ADMIN
+}

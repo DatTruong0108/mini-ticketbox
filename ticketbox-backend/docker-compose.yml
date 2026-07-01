@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ticketbox-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: tora01082003
+      POSTGRES_DB: ticketbox_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: ticketbox-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    # Lệnh cực kỳ quan trọng: Bật tính năng Keyspace Notifications (Ex) để lắng nghe key hết hạn (luồng nhả vé sau 5 phút)
+    command: redis-server --notify-keyspace-events Ex
+
+volumes:
+  postgres_data:
