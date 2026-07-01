@@ -22,8 +22,10 @@ import { TicketsService } from './tickets.service.js';
 import {
   HoldTicketDto,
   CancelTicketDto,
+  PayTicketDto,
   HoldTicketResponseDto,
   CancelTicketResponseDto,
+  PayTicketResponseDto,
   TicketErrorResponseDto,
 } from './dto/tickets.dto.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
@@ -183,6 +185,78 @@ export class TicketsController {
       return res.status(HttpStatus.OK).json({
         statusCode: HttpStatus.OK,
         message: 'Ticket cancelled successfully',
+        data,
+      });
+    } catch (error) {
+      return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        message:
+          error instanceof Error ? error.message : 'Internal server error',
+      });
+    }
+  }
+
+  // ─── Pay Ticket ─────────────────────────────────────────────────
+
+  /**
+   * POST /api/tickets/pay
+   *
+   * Process a mock payment for a held ticket.
+   * Creates an Order (PAID) and marks the Ticket as SOLD in a single
+   * Prisma interactive transaction. Deletes the Redis hold key to
+   * prevent the expiration listener from reverting the sale.
+   *
+   * The `userId` is extracted from the validated JWT access token —
+   * never trusted from the request body (prevents IDOR).
+   */
+  @Post('pay')
+  @ApiOperation({
+    summary: 'Pay for a held ticket (mock payment)',
+    description:
+      'Complete the purchase of a ticket that is currently in HOLD status. ' +
+      'Creates a PAID order and marks the ticket as SOLD atomically. ' +
+      'Requires a valid JWT access token in the Authorization header.',
+  })
+  @ApiOkResponse({
+    type: PayTicketResponseDto,
+    description: 'Payment successful — returns order and ticket details',
+  })
+  @ApiBadRequestResponse({
+    type: TicketErrorResponseDto,
+    description:
+      'Ticket not found, not in HOLD status, or user is not the holder',
+  })
+  @ApiUnauthorizedResponse({
+    type: TicketErrorResponseDto,
+    description: 'Missing or invalid access token',
+  })
+  @ApiInternalServerErrorResponse({
+    type: TicketErrorResponseDto,
+    description: 'Unexpected server error',
+  })
+  async payTicket(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: PayTicketDto,
+    @Res() res: Response,
+  ): Promise<Response> {
+    try {
+      const result = await this.ticketsService.payTicket(
+        dto.ticketId,
+        user.sub,
+      );
+
+      if (result.isErr()) {
+        return res.status(HttpStatus.BAD_REQUEST).json({
+          statusCode: HttpStatus.BAD_REQUEST,
+          message: result.unwrapErr().message,
+        });
+      }
+
+      const data = result.unwrap();
+
+      return res.status(HttpStatus.OK).json({
+        statusCode: HttpStatus.OK,
+        message: 'Payment successful',
         data,
       });
     } catch (error) {

@@ -55,6 +55,33 @@ export class CancelTicketDto {
   ticketId!: string;
 }
 
+/**
+ * Payload for paying / purchasing a held ticket.
+ * The `userId` is NOT accepted from the client — it is extracted
+ * from the validated JWT access token by the controller.
+ */
+export class PayTicketDto {
+  @ApiProperty({
+    description: 'The ID of the ticket to pay for (must be in HOLD status)',
+    example: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+  })
+  @IsString()
+  @IsNotEmpty({ message: 'ticketId must not be empty' })
+  @IsUUID('4', { message: 'ticketId must be a valid UUID' })
+  ticketId!: string;
+}
+
+// ─── Enums (Order) ───────────────────────────────────────────────
+
+/**
+ * Mirror of Prisma's OrderStatus enum for use in response data classes.
+ */
+export enum OrderStatusEnum {
+  PENDING = 'PENDING',
+  PAID = 'PAID',
+  CANCELLED = 'CANCELLED',
+}
+
 // ─── Response Data Classes ───────────────────────────────────────
 
 /**
@@ -127,6 +154,44 @@ export class CancelTicketDataDto {
   status!: TicketStatusEnum;
 }
 
+/**
+ * Data object returned inside the `data` field when a ticket payment succeeds.
+ * Fully documented for Swagger via @ApiProperty.
+ */
+export class PaymentResultDataDto {
+  @ApiProperty({
+    description: 'ID of the newly created Order',
+    example: 'c3d4e5f6-a7b8-9012-cdef-123456789012',
+  })
+  orderId!: string;
+
+  @ApiProperty({
+    description: 'ID of the purchased ticket',
+    example: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+  })
+  ticketId!: string;
+
+  @ApiProperty({
+    description: 'Final status of the ticket after payment',
+    enum: TicketStatusEnum,
+    example: TicketStatusEnum.SOLD,
+  })
+  ticketStatus!: TicketStatusEnum;
+
+  @ApiProperty({
+    description: 'Status of the order',
+    enum: OrderStatusEnum,
+    example: OrderStatusEnum.PAID,
+  })
+  orderStatus!: OrderStatusEnum;
+
+  @ApiProperty({
+    description: 'Total price charged in VND',
+    example: 500000,
+  })
+  totalPrice!: number;
+}
+
 // ─── Response DTOs ───────────────────────────────────────────────
 
 export class HoldTicketResponseDto extends BaseResponse {
@@ -145,6 +210,14 @@ export class CancelTicketResponseDto extends BaseResponse {
   data!: CancelTicketDataDto;
 }
 
+export class PayTicketResponseDto extends BaseResponse {
+  @ApiProperty({
+    description: 'Payment result details',
+    type: PaymentResultDataDto,
+  })
+  data!: PaymentResultDataDto;
+}
+
 export class TicketErrorResponseDto {
   @ApiProperty({ example: 409, description: 'HTTP status code' })
   statusCode!: number;
@@ -152,3 +225,4 @@ export class TicketErrorResponseDto {
   @ApiProperty({ example: 'Tickets Sold Out', description: 'Error message' })
   message!: string;
 }
+

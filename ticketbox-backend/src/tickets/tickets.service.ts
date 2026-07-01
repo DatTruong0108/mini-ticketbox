@@ -6,9 +6,10 @@ import { RedisService } from '../redis/redis.service.js';
 import {
   TicketTypeEnum,
   TicketStatusEnum,
+  OrderStatusEnum,
 } from './dto/tickets.dto.js';
 
-import { HoldTicketData, CancelTicketData } from './interfaces/tickets.interface.js';
+import { HoldTicketData, CancelTicketData, PaymentResultData } from './interfaces/tickets.interface.js';
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -258,6 +259,96 @@ export class TicketsService implements OnModuleInit {
       });
     } catch (error) {
       this.logger.error(`cancelTicket failed: ${error}`);
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  // ─── Pay Ticket (Mock Payment) ──────────────────────────────────
+
+  /**
+   * Process a mock payment for a held ticket.
+   *
+   * Flow:
+   * 1. Find the ticket by ID.
+   * 2. Validate: must be in HOLD status and owned by the authenticated user.
+   * 3. Prisma `$transaction`: create an Order (PAID) + update Ticket (SOLD).
+   * 4. Delete the Redis hold key early to prevent the expiration listener
+   *    from accidentally reverting the sold ticket.
+   */
+  async payTicket(
+    ticketId: string,
+    userId: string,
+  ): Promise<Result<PaymentResultData, Error>> {
+    try {
+      // Step 1: Look up the ticket
+      const ticket = await this.prisma.ticket.findUnique({
+        where: { id: ticketId },
+      });
+
+      if (!ticket) {
+        return Err(new Error('Ticket not found'));
+      }
+
+      // Step 2: Validate ownership and status
+      if (ticket.status !== 'HOLD') {
+        return Err(
+          new Error(
+            `Ticket is not in HOLD status (current: ${ticket.status})`,
+          ),
+        );
+      }
+
+      if (ticket.userId !== userId) {
+        return Err(new Error('You are not the holder of this ticket'));
+      }
+
+      // Step 3: Atomic Prisma interactive transaction — create Order + update Ticket
+      const { order, updatedTicket } = await this.prisma.$transaction(
+        async (tx) => {
+          // Create a PAID order
+          const createdOrder = await tx.order.create({
+            data: {
+              userId,
+              totalPrice: ticket.price,
+              status: 'PAID',
+            },
+          });
+
+          // Mark the ticket as SOLD, link to the order, clear expiry
+          const soldTicket = await tx.ticket.update({
+            where: { id: ticketId },
+            data: {
+              status: 'SOLD',
+              orderId: createdOrder.id,
+              expiresAt: null,
+            },
+          });
+
+          return { order: createdOrder, updatedTicket: soldTicket };
+        },
+      );
+
+      // Step 4: Delete the Redis hold key early
+      const deleteResult = await this.redisService.deleteHoldKey(ticketId);
+      if (deleteResult.isErr()) {
+        this.logger.error(
+          `Failed to delete Redis hold key after payment for ticket ${ticketId}: ${deleteResult.unwrapErr().message}`,
+        );
+      }
+
+      this.logger.log(
+        `Ticket ${ticketId} purchased by user ${userId} — Order ${order.id} created (${ticket.price} VND)`,
+      );
+
+      return Ok({
+        orderId: order.id,
+        ticketId,
+        ticketStatus: TicketStatusEnum.SOLD,
+        orderStatus: OrderStatusEnum.PAID,
+        totalPrice: ticket.price,
+      });
+    } catch (error) {
+      this.logger.error(`payTicket failed: ${error}`);
       return Err(error instanceof Error ? error : new Error(String(error)));
     }
   }

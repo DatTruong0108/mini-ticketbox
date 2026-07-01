@@ -1,4 +1,4 @@
-import { TicketTypeEnum, TicketStatusEnum } from '../dto/tickets.dto.js';
+import { TicketTypeEnum, TicketStatusEnum, OrderStatusEnum } from '../dto/tickets.dto.js';
 
 /**
  * Shape of the response data when a ticket is held.
@@ -20,3 +20,15 @@ export interface CancelTicketData {
   type: TicketTypeEnum;
   status: TicketStatusEnum;
 }
+
+/**
+ * Shape of the response data when a ticket payment succeeds.
+ */
+export interface PaymentResultData {
+  orderId: string;
+  ticketId: string;
+  ticketStatus: TicketStatusEnum;
+  orderStatus: OrderStatusEnum;
+  totalPrice: number;
+}
+
