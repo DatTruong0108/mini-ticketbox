@@ -7,22 +7,7 @@ import { Result, Ok, Err } from 'oxide.ts';
 import { UserService } from '../user/user.service.js';
 import { JwtPayload } from '../common/interfaces/jwt-payload.interface.js';
 import { Role } from '../common/enums/role.enum.js';
-
-// ─── Result Types ────────────────────────────────────────────────
-
-export interface AuthTokens {
-  accessToken: string;
-  refreshToken: string;
-}
-
-export interface LoginResult {
-  tokens: AuthTokens;
-  user: {
-    id: string;
-    userName: string;
-    role: Role;
-  };
-}
+import { AuthTokens, LoginResult } from './interfaces/auth.interface.js';
 
 // ─── Service ─────────────────────────────────────────────────────
 
