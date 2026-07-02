@@ -30,6 +30,7 @@ import {
   PayTicketResponseDto,
   TicketErrorResponseDto,
   TicketTypesResponseDto,
+  AvailableTicketsResponseDto,
 } from './dto/tickets.dto.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
@@ -325,6 +326,54 @@ export class TicketsController {
       return res.status(HttpStatus.OK).json({
         statusCode: HttpStatus.OK,
         message: 'Ticket types retrieved successfully',
+        data,
+      });
+    } catch (error) {
+      return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        message:
+          error instanceof Error ? error.message : 'Internal server error',
+      });
+    }
+  }
+
+  // ─── Get Available Tickets ───────────────────────────────────────
+
+  /**
+   * GET /api/tickets/available
+   *
+   * Fetch number of tickets of each type whose status is AVAILABLE.
+   * Public endpoint, no authentication required.
+   */
+  @Get('available')
+  @ApiOperation({
+    summary: 'Get number of available tickets',
+    description: 'Retrieve the number of tickets available for purchase grouped by ticket type.',
+  })
+  @ApiOkResponse({
+    type: AvailableTicketsResponseDto,
+    description: 'List of ticket types and available counts retrieved successfully',
+  })
+  @ApiInternalServerErrorResponse({
+    type: TicketErrorResponseDto,
+    description: 'Unexpected server error',
+  })
+  async getAvailableTickets(@Res() res: Response): Promise<Response> {
+    try {
+      const result = await this.ticketsService.getAvailableTickets();
+
+      if (result.isErr()) {
+        return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+          statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+          message: result.unwrapErr().message,
+        });
+      }
+
+      const data = result.unwrap();
+
+      return res.status(HttpStatus.OK).json({
+        statusCode: HttpStatus.OK,
+        message: 'Available tickets retrieved successfully',
         data,
       });
     } catch (error) {

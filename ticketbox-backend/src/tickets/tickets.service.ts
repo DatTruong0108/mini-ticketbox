@@ -15,6 +15,8 @@ import {
   CancelTicketData,
   PaymentResultData,
   TicketTypes,
+  AvailableTicketCount,
+  AvailableTicketsResult,
 } from './interfaces/tickets.interface.js';
 import { TicketsGateway } from './tickets.gateway.js';
 
@@ -78,7 +80,10 @@ export class TicketsService implements OnModuleInit {
       );
 
       // Seed the initial count into the websocket gateway
-      this.ticketsGateway.queueCountUpdate(availableCount);
+      const ticketsResult = await this.getAvailableTickets();
+      if (ticketsResult.isOk()) {
+        this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+      }
 
       // 3. Register the expiration handler (fires when ticket_hold:{id} key expires)
       this.redisService.registerExpirationHandler((ticketId: string) => {
@@ -158,7 +163,10 @@ export class TicketsService implements OnModuleInit {
         const restoreResult = await this.redisService.incrementPool(quantity);
         globalPoolReserved = false;
         if (restoreResult.isOk()) {
-          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+          const ticketsResult = await this.getAvailableTickets();
+          if (ticketsResult.isOk()) {
+            this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+          }
         }
 
         await this.redisService.decrementUserQuota(userId, quantity);
@@ -229,7 +237,10 @@ export class TicketsService implements OnModuleInit {
       );
 
       // Queue the new count to be broadcast
-      this.ticketsGateway.queueCountUpdate(remaining);
+      const ticketsResult = await this.getAvailableTickets();
+      if (ticketsResult.isOk()) {
+        this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+      }
 
       // Build response
       const tickets: HoldTicketData[] = heldTickets.map((t) => ({
@@ -262,7 +273,10 @@ export class TicketsService implements OnModuleInit {
           const restoreResult =
             await this.redisService.incrementPool(quantity);
           if (restoreResult.isOk()) {
-            this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+            const ticketsResult = await this.getAvailableTickets();
+            if (ticketsResult.isOk()) {
+              this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+            }
           }
         }
         if (userQuotaReserved) {
@@ -283,7 +297,10 @@ export class TicketsService implements OnModuleInit {
           const restoreResult =
             await this.redisService.incrementPool(quantity);
           if (restoreResult.isOk()) {
-            this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+            const ticketsResult = await this.getAvailableTickets();
+            if (ticketsResult.isOk()) {
+              this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+            }
           }
         }
         if (userQuotaReserved) {
@@ -364,7 +381,10 @@ export class TicketsService implements OnModuleInit {
           `Failed to increment Redis pool after cancel: ${incrResult.unwrapErr().message}`,
         );
       } else {
-        this.ticketsGateway.queueCountUpdate(incrResult.unwrap());
+        const ticketsResult = await this.getAvailableTickets();
+        if (ticketsResult.isOk()) {
+          this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+        }
       }
 
       // Step 6: Decrement the user's quota counter
@@ -538,7 +558,10 @@ export class TicketsService implements OnModuleInit {
           `Expiration handler: failed to increment pool for ticket ${ticketId}: ${incrResult.unwrapErr().message}`,
         );
       } else {
-        this.ticketsGateway.queueCountUpdate(incrResult.unwrap());
+        const ticketsResult = await this.getAvailableTickets();
+        if (ticketsResult.isOk()) {
+          this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
+        }
       }
 
       // Decrement the user's quota counter
@@ -591,6 +614,49 @@ export class TicketsService implements OnModuleInit {
       return Ok(formatted);
     } catch (error) {
       this.logger.error(`getTicketTypes failed: ${error}`);
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Fetch distinct ticket types and their available counts, along with the total available tickets.
+   * Public endpoint, no authentication required.
+   *
+   * @returns List of ticket types, available counts, and total available count
+   */
+  async getAvailableTickets(): Promise<Result<AvailableTicketsResult, Error>> {
+    try {
+      const distinctTypes = await this.prisma.ticket.findMany({
+        distinct: ['type'],
+        select: { type: true },
+      });
+
+      const availableCounts = await this.prisma.ticket.groupBy({
+        by: ['type'],
+        where: { status: 'AVAILABLE' },
+        _count: {
+          id: true,
+        },
+      });
+
+      const countMap = new Map<string, number>();
+      let total = 0;
+      for (const item of availableCounts) {
+        countMap.set(item.type, item._count.id);
+        total += item._count.id;
+      }
+
+      const tickets = distinctTypes.map((t) => ({
+        type: t.type as TicketTypeEnum,
+        count: countMap.get(t.type) || 0,
+      }));
+
+      return Ok({
+        tickets,
+        total,
+      });
+    } catch (error) {
+      this.logger.error(`getAvailableTickets failed: ${error}`);
       return Err(error instanceof Error ? error : new Error(String(error)));
     }
   }

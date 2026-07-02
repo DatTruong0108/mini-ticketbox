@@ -45,3 +45,13 @@ export interface TicketTypes {
   type: TicketTypeEnum;
   price: number
 }
+
+export interface AvailableTicketCount {
+  type: TicketTypeEnum;
+  count: number;
+}
+
+export interface AvailableTicketsResult {
+  tickets: AvailableTicketCount[];
+  total: number;
+}

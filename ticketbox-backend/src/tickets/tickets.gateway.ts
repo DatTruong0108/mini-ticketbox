@@ -10,6 +10,9 @@ import { Subject, Subscription } from 'rxjs';
 import { throttleTime } from 'rxjs/operators';
 import { Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { RedisService } from '../redis/redis.service.js';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { AvailableTicketsResult } from './interfaces/tickets.interface.js';
+import { TicketTypeEnum } from './dto/tickets.dto.js';
 
 /**
  * WebSocket Gateway for broadcasting real-time ticket availability updates.
@@ -36,13 +39,16 @@ export class TicketsGateway
   server!: Server;
 
   /** Subject to buffer and throttle available ticket count updates. */
-  private readonly countUpdateSubject = new Subject<number>();
+  private readonly countUpdateSubject = new Subject<AvailableTicketsResult>();
   private subscription!: Subscription;
 
   /** Cache to ensure we only broadcast when the value has actually changed. */
-  private lastBroadcastCount: number | null = null;
+  private lastBroadcastData: AvailableTicketsResult | null = null;
 
-  constructor(private readonly redisService: RedisService) {}
+  constructor(
+    private readonly redisService: RedisService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   // ─── Lifecycle Hook ─────────────────────────────────────────────
 
@@ -51,8 +57,8 @@ export class TicketsGateway
     // leading: true, trailing: true ensures updates are immediate but captures the final state.
     this.subscription = this.countUpdateSubject
       .pipe(throttleTime(500, undefined, { leading: true, trailing: true }))
-      .subscribe((count) => {
-        this.broadcast(count);
+      .subscribe((data) => {
+        this.broadcast(data);
       });
   }
 
@@ -70,23 +76,45 @@ export class TicketsGateway
 
   /**
    * Handle client connection.
-   * Send the current available ticket count from Redis immediately to the new client.
+   * Send the current available ticket count from PostgreSQL immediately to the new client.
    */
   async handleConnection(client: Socket): Promise<void> {
     try {
       this.logger.log(`Client connected: ${client.id}`);
       
-      const countResult = await this.redisService.getPoolCount();
-      if (countResult.isOk()) {
-        const count = countResult.unwrap();
-        client.emit('ticket_count_updated', {
-          statusCode: 200,
-          message: 'Initial ticket count',
-          data: {
-            availableTickets: count,
-          },
-        });
+      const distinctTypes = await this.prisma.ticket.findMany({
+        distinct: ['type'],
+        select: { type: true },
+      });
+
+      const availableCounts = await this.prisma.ticket.groupBy({
+        by: ['type'],
+        where: { status: 'AVAILABLE' },
+        _count: {
+          id: true,
+        },
+      });
+
+      const countMap = new Map<string, number>();
+      let total = 0;
+      for (const item of availableCounts) {
+        countMap.set(item.type, item._count.id);
+        total += item._count.id;
       }
+
+      const tickets = distinctTypes.map((t) => ({
+        type: t.type as TicketTypeEnum,
+        count: countMap.get(t.type) || 0,
+      }));
+
+      client.emit('ticket_count_updated', {
+        statusCode: 200,
+        message: 'Initial ticket count',
+        data: {
+          tickets,
+          total,
+        },
+      });
     } catch (error) {
       this.logger.error(`Error sending initial ticket count: ${error}`);
     }
@@ -102,27 +130,42 @@ export class TicketsGateway
    * Queue a ticket count update.
    * Pushes the new count into the RxJS subject for throttling.
    */
-  queueCountUpdate(count: number): void {
-    this.countUpdateSubject.next(count);
+  queueCountUpdate(data: AvailableTicketsResult): void {
+    this.countUpdateSubject.next(data);
   }
 
   /**
-   * Broadcast the available ticket count to all connected clients.
+   * Compare two payloads to determine if they contain identical counts.
+   */
+  private isSamePayload(a: AvailableTicketsResult, b: AvailableTicketsResult): boolean {
+    if (a.total !== b.total) return false;
+    if (a.tickets.length !== b.tickets.length) return false;
+    for (let i = 0; i < a.tickets.length; i++) {
+      if (a.tickets[i].type !== b.tickets[i].type || a.tickets[i].count !== b.tickets[i].count) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Broadcast the available ticket count details to all connected clients.
    * Only emits if the count is different from the last broadcast count.
    */
-  private broadcast(count: number): void {
+  private broadcast(data: AvailableTicketsResult): void {
     try {
-      if (this.lastBroadcastCount === count) {
+      if (this.lastBroadcastData && this.isSamePayload(this.lastBroadcastData, data)) {
         return;
       }
-      this.lastBroadcastCount = count;
+      this.lastBroadcastData = data;
 
-      this.logger.log(`Broadcasting updated ticket count: ${count}`);
+      this.logger.log(`Broadcasting updated ticket count: ${JSON.stringify(data)}`);
       this.server.emit('ticket_count_updated', {
         statusCode: 200,
         message: 'Ticket count updated',
         data: {
-          availableTickets: count,
+          tickets: data.tickets,
+          total: data.total,
         },
       });
     } catch (error) {

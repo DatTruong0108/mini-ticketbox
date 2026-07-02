@@ -293,4 +293,43 @@ export class TicketTypesResponseDto extends BaseResponse {
   data!: TicketTypePriceDto[];
 }
 
+export class AvailableTicketCountDto {
+  @ApiProperty({
+    description: 'Type of the ticket',
+    enum: TicketTypeEnum,
+    example: TicketTypeEnum.STANDARD,
+  })
+  type!: TicketTypeEnum;
+
+  @ApiProperty({
+    description: 'Number of available tickets of this type',
+    example: 150,
+  })
+  count!: number;
+}
+
+export class AvailableTicketsDataDto {
+  @ApiProperty({
+    description: 'List of ticket types and their available counts',
+    type: [AvailableTicketCountDto],
+  })
+  tickets!: AvailableTicketCountDto[];
+
+  @ApiProperty({
+    description: 'Total number of available tickets of all types',
+    example: 200,
+  })
+  total!: number;
+}
+
+export class AvailableTicketsResponseDto extends BaseResponse {
+  @ApiProperty({
+    description: 'Available tickets data with total count',
+    type: AvailableTicketsDataDto,
+  })
+  data!: AvailableTicketsDataDto;
+}
+
+
+
 
