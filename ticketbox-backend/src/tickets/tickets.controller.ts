@@ -188,7 +188,7 @@ export class TicketsController {
   ): Promise<Response> {
     try {
       const result = await this.ticketsService.cancelTicket(
-        dto.ticketId,
+        dto.ticketIds,
         user.sub,
       );
 
@@ -203,7 +203,7 @@ export class TicketsController {
 
       return res.status(HttpStatus.OK).json({
         statusCode: HttpStatus.OK,
-        message: 'Ticket cancelled successfully',
+        message: `${data.cancelledCount} ticket(s) cancelled successfully`,
         data,
       });
     } catch (error) {
@@ -232,10 +232,10 @@ export class TicketsController {
   @ApiBearerAuth('access-token')
   @Post('pay')
   @ApiOperation({
-    summary: 'Pay for a held ticket (mock payment)',
+    summary: 'Pay for held ticket(s) (mock payment)',
     description:
-      'Complete the purchase of a ticket that is currently in HOLD status. ' +
-      'Creates a PAID order and marks the ticket as SOLD atomically. ' +
+      'Complete the purchase of one or more tickets that are currently in HOLD status. ' +
+      'Creates a single PAID order and marks the tickets as SOLD atomically. ' +
       'Requires a valid JWT access token in the Authorization header.',
   })
   @ApiOkResponse({
@@ -245,7 +245,7 @@ export class TicketsController {
   @ApiBadRequestResponse({
     type: TicketErrorResponseDto,
     description:
-      'Ticket not found, not in HOLD status, or user is not the holder',
+      'One or more tickets not found, not in HOLD status, or user is not the holder',
   })
   @ApiUnauthorizedResponse({
     type: TicketErrorResponseDto,
@@ -262,7 +262,7 @@ export class TicketsController {
   ): Promise<Response> {
     try {
       const result = await this.ticketsService.payTicket(
-        dto.ticketId,
+        dto.ticketIds,
         user.sub,
       );
 

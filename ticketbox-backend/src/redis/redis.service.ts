@@ -252,6 +252,26 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Delete multiple hold keys in a single Redis pipeline for efficiency.
+   * Used early in the bulk cancellation flow.
+   */
+  async deleteHoldKeysPipeline(ticketIds: string[]): Promise<Result<void, Error>> {
+    try {
+      const pipeline = this.commandClient.pipeline();
+      for (const id of ticketIds) {
+        pipeline.del(`${HOLD_KEY_PREFIX}${id}`);
+      }
+      await pipeline.exec();
+      return Ok(undefined);
+    } catch (error) {
+      this.logger.error(
+        `Failed to delete hold keys pipeline for ${ticketIds.length} tickets: ${error}`,
+      );
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
    * Set multiple hold keys in a single Redis pipeline for efficiency.
    * Each key is set with the provided TTL in seconds.
    * Used after a multi-ticket hold to create all expiration triggers at once.

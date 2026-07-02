@@ -319,46 +319,50 @@ export class TicketsService implements OnModuleInit {
   // ─── Cancel / Release Ticket ────────────────────────────────────
 
   /**
-   * Manually cancel a ticket hold (user-initiated release).
+   * Manually cancel multiple ticket holds (user-initiated bulk release).
    *
    * Flow:
-   * 1. Find the ticket in PostgreSQL by ID.
-   * 2. Validate: must be in HOLD status and owned by the requesting user.
-   * 3. Revert to AVAILABLE, clear userId and expiresAt.
-   * 4. Delete the Redis hold key early.
-   * 5. Increment the Redis pool.
-   * 6. Decrement the user's quota counter.
+   * 1. Find the tickets in PostgreSQL by IDs.
+   * 2. Validate: all must exist, be in HOLD status, and owned by the requesting user.
+   * 3. Revert them to AVAILABLE, clear userId and expiresAt.
+   * 4. Delete the Redis hold keys in a pipeline early.
+   * 5. Increment the Redis pool count by the number of tickets.
+   * 6. Decrement the user's quota counter by the number of tickets.
    */
   async cancelTicket(
-    ticketId: string,
+    ticketIds: string[],
     userId: string,
   ): Promise<Result<CancelTicketData, Error>> {
     try {
-      // Step 1: Look up the ticket
-      const ticket = await this.prisma.ticket.findUnique({
-        where: { id: ticketId },
+      // Step 1: Look up all requested tickets in the database
+      const fetchedTickets = await this.prisma.ticket.findMany({
+        where: { id: { in: ticketIds } },
       });
 
-      if (!ticket) {
-        return Err(new Error('Ticket not found'));
+      if (fetchedTickets.length !== ticketIds.length) {
+        return Err(new Error('Some tickets were not found'));
       }
 
-      // Step 2: Validate ownership and status
-      if (ticket.status !== 'HOLD') {
-        return Err(
-          new Error(
-            `Ticket is not in HOLD status (current: ${ticket.status})`,
-          ),
-        );
+      // Step 2: Validate ownership and status of each ticket
+      for (const ticket of fetchedTickets) {
+        if (ticket.status !== 'HOLD') {
+          return Err(
+            new Error(
+              `Ticket ${ticket.id} is not in HOLD status (current: ${ticket.status})`,
+            ),
+          );
+        }
+
+        if (ticket.userId !== userId) {
+          return Err(
+            new Error(`You are not the holder of ticket ${ticket.id}`),
+          );
+        }
       }
 
-      if (ticket.userId !== userId) {
-        return Err(new Error('You are not the holder of this ticket'));
-      }
-
-      // Step 3: Revert the ticket to AVAILABLE in PostgreSQL
-      const updatedTicket = await this.prisma.ticket.update({
-        where: { id: ticketId },
+      // Step 3: Revert the tickets to AVAILABLE in PostgreSQL
+      await this.prisma.ticket.updateMany({
+        where: { id: { in: ticketIds } },
         data: {
           status: 'AVAILABLE',
           userId: null,
@@ -366,16 +370,17 @@ export class TicketsService implements OnModuleInit {
         },
       });
 
-      // Step 4: Delete the Redis hold key early
-      const deleteResult = await this.redisService.deleteHoldKey(ticketId);
+      // Step 4: Delete the Redis hold keys in a pipeline
+      const deleteResult = await this.redisService.deleteHoldKeysPipeline(ticketIds);
       if (deleteResult.isErr()) {
         this.logger.error(
-          `Failed to delete Redis hold key for ticket ${ticketId}: ${deleteResult.unwrapErr().message}`,
+          `Failed to delete Redis hold keys pipeline for ${ticketIds.length} tickets: ${deleteResult.unwrapErr().message}`,
         );
       }
 
-      // Step 5: Increment the Redis pool
-      const incrResult = await this.redisService.incrementPool();
+      // Step 5: Increment the Redis pool by the number of cancelled tickets
+      const count = ticketIds.length;
+      const incrResult = await this.redisService.incrementPool(count);
       if (incrResult.isErr()) {
         this.logger.error(
           `Failed to increment Redis pool after cancel: ${incrResult.unwrapErr().message}`,
@@ -387,10 +392,10 @@ export class TicketsService implements OnModuleInit {
         }
       }
 
-      // Step 6: Decrement the user's quota counter
+      // Step 6: Decrement the user's quota counter by the number of cancelled tickets
       const quotaResult = await this.redisService.decrementUserQuota(
         userId,
-        1,
+        count,
       );
       if (quotaResult.isErr()) {
         this.logger.error(
@@ -399,13 +404,12 @@ export class TicketsService implements OnModuleInit {
       }
 
       this.logger.log(
-        `Ticket ${ticketId} cancelled by user ${userId} — status reverted to AVAILABLE`,
+        `${count} ticket(s) cancelled by user ${userId} — status reverted to AVAILABLE`,
       );
 
       return Ok({
-        id: updatedTicket.id,
-        type: updatedTicket.type as TicketTypeEnum,
-        status: updatedTicket.status as TicketStatusEnum,
+        ticketIds,
+        cancelledCount: count,
       });
     } catch (error) {
       this.logger.error(`cancelTicket failed: ${error}`);
@@ -416,86 +420,100 @@ export class TicketsService implements OnModuleInit {
   // ─── Pay Ticket (Mock Payment) ──────────────────────────────────
 
   /**
-   * Process a mock payment for a held ticket.
+   * Process a mock payment for multiple held tickets.
+   * Creates a single Order (PAID) and marks the Tickets as SOLD atomically.
    *
    * Flow:
-   * 1. Find the ticket by ID.
-   * 2. Validate: must be in HOLD status and owned by the authenticated user.
-   * 3. Prisma `$transaction`: create an Order (PAID) + update Ticket (SOLD).
-   * 4. Delete the Redis hold key early to prevent the expiration listener
-   *    from accidentally reverting the sold ticket.
+   * 1. Fetch tickets by IDs.
+   * 2. Validate: all must exist, be in HOLD status, and owned by the authenticated user.
+   * 3. Calculate: sum prices.
+   * 4. Interactive Transaction: create Order + update Tickets status.
+   * 5. Redis Cleanup: pipeline delete hold keys.
+   * 6. Return response.
    */
   async payTicket(
-    ticketId: string,
+    ticketIds: string[],
     userId: string,
   ): Promise<Result<PaymentResultData, Error>> {
     try {
-      // Step 1: Look up the ticket
-      const ticket = await this.prisma.ticket.findUnique({
-        where: { id: ticketId },
+      // Step 1: Look up all requested tickets
+      const fetchedTickets = await this.prisma.ticket.findMany({
+        where: { id: { in: ticketIds } },
       });
 
-      if (!ticket) {
-        return Err(new Error('Ticket not found'));
+      if (fetchedTickets.length !== ticketIds.length) {
+        return Err(new Error('Some tickets were not found or are invalid'));
       }
 
-      // Step 2: Validate ownership and status
-      if (ticket.status !== 'HOLD') {
-        return Err(
-          new Error(
-            `Ticket is not in HOLD status (current: ${ticket.status})`,
-          ),
-        );
+      // Step 2: Validate status and ownership of each ticket
+      for (const ticket of fetchedTickets) {
+        if (ticket.status !== 'HOLD') {
+          return Err(
+            new Error(
+              `Ticket ${ticket.id} is not in HOLD status (current: ${ticket.status})`,
+            ),
+          );
+        }
+
+        if (ticket.userId !== userId) {
+          return Err(
+            new Error(`You are not the holder of ticket ${ticket.id}`),
+          );
+        }
       }
 
-      if (ticket.userId !== userId) {
-        return Err(new Error('You are not the holder of this ticket'));
-      }
+      // Step 3: Calculate the total price
+      const totalPrice = fetchedTickets.reduce((sum, t) => sum + t.price, 0);
 
-      // Step 3: Atomic Prisma interactive transaction — create Order + update Ticket
-      const { order, updatedTicket } = await this.prisma.$transaction(
-        async (tx) => {
-          // Create a PAID order
-          const createdOrder = await tx.order.create({
-            data: {
-              userId,
-              totalPrice: ticket.price,
-              status: 'PAID',
-            },
-          });
+      // Step 4: Atomic Prisma Interactive Transaction
+      const order = await this.prisma.$transaction(async (tx) => {
+        // Create a single PAID order
+        const createdOrder = await tx.order.create({
+          data: {
+            userId,
+            totalPrice,
+            status: 'PAID',
+          },
+        });
 
-          // Mark the ticket as SOLD, link to the order, clear expiry
-          const soldTicket = await tx.ticket.update({
-            where: { id: ticketId },
-            data: {
-              status: 'SOLD',
-              orderId: createdOrder.id,
-              expiresAt: null,
-            },
-          });
+        // Mark all selected tickets as SOLD, link to the order, clear expiry
+        await tx.ticket.updateMany({
+          where: { id: { in: ticketIds } },
+          data: {
+            status: 'SOLD',
+            orderId: createdOrder.id,
+            expiresAt: null,
+          },
+        });
 
-          return { order: createdOrder, updatedTicket: soldTicket };
-        },
-      );
+        return createdOrder;
+      });
 
-      // Step 4: Delete the Redis hold key early
-      const deleteResult = await this.redisService.deleteHoldKey(ticketId);
+      // Step 5: Delete the Redis hold keys in a pipeline early
+      const deleteResult = await this.redisService.deleteHoldKeysPipeline(ticketIds);
       if (deleteResult.isErr()) {
         this.logger.error(
-          `Failed to delete Redis hold key after payment for ticket ${ticketId}: ${deleteResult.unwrapErr().message}`,
+          `Failed to delete Redis hold keys pipeline after payment for ${ticketIds.length} tickets: ${deleteResult.unwrapErr().message}`,
         );
       }
 
       this.logger.log(
-        `Ticket ${ticketId} purchased by user ${userId} — Order ${order.id} created (${ticket.price} VND)`,
+        `${ticketIds.length} ticket(s) purchased by user ${userId} — Order ${order.id} created (${totalPrice} VND)`,
       );
+
+      // Format ticket list for return
+      const tickets = fetchedTickets.map((t) => ({
+        id: t.id,
+        type: t.type as TicketTypeEnum,
+        price: t.price,
+        status: TicketStatusEnum.SOLD,
+      }));
 
       return Ok({
         orderId: order.id,
-        ticketId,
-        ticketStatus: TicketStatusEnum.SOLD,
+        totalPrice,
         orderStatus: OrderStatusEnum.PAID,
-        totalPrice: ticket.price,
+        tickets,
       });
     } catch (error) {
       this.logger.error(`payTicket failed: ${error}`);

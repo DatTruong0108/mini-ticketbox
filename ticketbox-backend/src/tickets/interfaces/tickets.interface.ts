@@ -25,21 +25,24 @@ export interface HoldTicketResultData {
  * Shape of the response data when a ticket is cancelled.
  */
 export interface CancelTicketData {
+  ticketIds: string[];
+  cancelledCount: number;
+}
+
+export interface PaymentResultTicket {
   id: string;
   type: TicketTypeEnum;
+  price: number;
   status: TicketStatusEnum;
 }
 
-/**
- * Shape of the response data when a ticket payment succeeds.
- */
 export interface PaymentResultData {
   orderId: string;
-  ticketId: string;
-  ticketStatus: TicketStatusEnum;
-  orderStatus: OrderStatusEnum;
   totalPrice: number;
+  orderStatus: OrderStatusEnum;
+  tickets: PaymentResultTicket[];
 }
+
 
 export interface TicketTypes {
   type: TicketTypeEnum;

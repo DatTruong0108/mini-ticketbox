@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsInt, IsNotEmpty, IsString, IsUUID, Max, Min } from 'class-validator';
+import { IsArray, ArrayMinSize, IsEnum, IsInt, IsNotEmpty, IsString, IsUUID, Max, Min } from 'class-validator';
 import { BaseResponse } from '../../common/dto/base-response.dto.js';
 
 // ─── Enums ───────────────────────────────────────────────────────
@@ -58,13 +58,15 @@ export class HoldTicketDto {
  */
 export class CancelTicketDto {
   @ApiProperty({
-    description: 'The ID of the ticket to cancel/release',
-    example: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+    description: 'The list of ticket IDs to cancel/release',
+    example: ['b2c3d4e5-f6a7-8901-bcde-f12345678901'],
+    type: [String],
   })
-  @IsString()
-  @IsNotEmpty({ message: 'ticketId must not be empty' })
-  @IsUUID('4', { message: 'ticketId must be a valid UUID' })
-  ticketId!: string;
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMinSize(1)
+  @IsUUID('4', { each: true, message: 'each ticketId must be a valid UUID' })
+  ticketIds!: string[];
 }
 
 /**
@@ -74,13 +76,15 @@ export class CancelTicketDto {
  */
 export class PayTicketDto {
   @ApiProperty({
-    description: 'The ID of the ticket to pay for (must be in HOLD status)',
-    example: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+    description: 'The list of ticket IDs to pay for (must be in HOLD status)',
+    example: ['b2c3d4e5-f6a7-8901-bcde-f12345678901'],
+    type: [String],
   })
-  @IsString()
-  @IsNotEmpty({ message: 'ticketId must not be empty' })
-  @IsUUID('4', { message: 'ticketId must be a valid UUID' })
-  ticketId!: string;
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMinSize(1)
+  @IsUUID('4', { each: true, message: 'each ticketId must be a valid UUID' })
+  ticketIds!: string[];
 }
 
 // ─── Enums (Order) ───────────────────────────────────────────────
@@ -170,7 +174,22 @@ export class HoldTicketResultDataDto {
  */
 export class CancelTicketDataDto {
   @ApiProperty({
-    description: 'Unique ID of the released ticket',
+    description: 'List of cancelled ticket IDs',
+    example: ['b2c3d4e5-f6a7-8901-bcde-f12345678901'],
+    type: [String],
+  })
+  ticketIds!: string[];
+
+  @ApiProperty({
+    description: 'Total number of cancelled tickets',
+    example: 1,
+  })
+  cancelledCount!: number;
+}
+
+export class SoldTicketDataDto {
+  @ApiProperty({
+    description: 'Unique ID of the purchased ticket',
     example: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
   })
   id!: string;
@@ -183,9 +202,15 @@ export class CancelTicketDataDto {
   type!: TicketTypeEnum;
 
   @ApiProperty({
-    description: 'Current status of the ticket (reverted to AVAILABLE)',
+    description: 'Price of the ticket in VND',
+    example: 500000,
+  })
+  price!: number;
+
+  @ApiProperty({
+    description: 'Status of the ticket (SOLD)',
     enum: TicketStatusEnum,
-    example: TicketStatusEnum.AVAILABLE,
+    example: TicketStatusEnum.SOLD,
   })
   status!: TicketStatusEnum;
 }
@@ -202,17 +227,10 @@ export class PaymentResultDataDto {
   orderId!: string;
 
   @ApiProperty({
-    description: 'ID of the purchased ticket',
-    example: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+    description: 'Total price charged in VND',
+    example: 500000,
   })
-  ticketId!: string;
-
-  @ApiProperty({
-    description: 'Final status of the ticket after payment',
-    enum: TicketStatusEnum,
-    example: TicketStatusEnum.SOLD,
-  })
-  ticketStatus!: TicketStatusEnum;
+  totalPrice!: number;
 
   @ApiProperty({
     description: 'Status of the order',
@@ -222,10 +240,10 @@ export class PaymentResultDataDto {
   orderStatus!: OrderStatusEnum;
 
   @ApiProperty({
-    description: 'Total price charged in VND',
-    example: 500000,
+    description: 'List of purchased tickets',
+    type: [SoldTicketDataDto],
   })
-  totalPrice!: number;
+  tickets!: SoldTicketDataDto[];
 }
 
 // ─── Response DTOs ───────────────────────────────────────────────
