@@ -13,6 +13,7 @@ import { TicketExpirationHandler } from './interfaces/redis.interface.js';
 
 const POOL_KEY = 'tickets_available';
 const HOLD_KEY_PREFIX = 'ticket_hold:';
+const USER_QUOTA_KEY_PREFIX = 'user_quota:';
 const EXPIRED_CHANNEL = '__keyevent@0__:expired';
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -124,29 +125,77 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Atomically decrement the ticket pool.
+   * Atomically decrement the ticket pool by `quantity`.
    * Returns the **new** value after decrement.
    */
-  async decrementPool(): Promise<Result<number, Error>> {
+  async decrementPool(quantity = 1): Promise<Result<number, Error>> {
     try {
-      const newValue = await this.commandClient.decr(POOL_KEY);
+      const newValue = await this.commandClient.decrby(POOL_KEY, quantity);
       return Ok(newValue);
     } catch (error) {
-      this.logger.error(`Failed to decrement pool: ${error}`);
+      this.logger.error(`Failed to decrement pool by ${quantity}: ${error}`);
       return Err(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   /**
-   * Atomically increment the ticket pool (used to restore a slot).
+   * Atomically increment the ticket pool by `quantity` (used to restore slots).
    * Returns the **new** value after increment.
    */
-  async incrementPool(): Promise<Result<number, Error>> {
+  async incrementPool(quantity = 1): Promise<Result<number, Error>> {
     try {
-      const newValue = await this.commandClient.incr(POOL_KEY);
+      const newValue = await this.commandClient.incrby(POOL_KEY, quantity);
       return Ok(newValue);
     } catch (error) {
-      this.logger.error(`Failed to increment pool: ${error}`);
+      this.logger.error(`Failed to increment pool by ${quantity}: ${error}`);
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  // ─── User Quota Commands ────────────────────────────────────────
+
+  /**
+   * Atomically increment the user's ticket quota counter by `quantity`.
+   * Used as the **first gate** in the hold flow to enforce the per-user limit.
+   * Returns the **new** total for the user.
+   */
+  async incrementUserQuota(
+    userId: string,
+    quantity: number,
+  ): Promise<Result<number, Error>> {
+    try {
+      const newValue = await this.commandClient.incrby(
+        `${USER_QUOTA_KEY_PREFIX}${userId}`,
+        quantity,
+      );
+      return Ok(newValue);
+    } catch (error) {
+      this.logger.error(
+        `Failed to increment user quota for ${userId}: ${error}`,
+      );
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Atomically decrement the user's ticket quota counter by `quantity`.
+   * Used for rollbacks and cancel/expiration flows.
+   * Returns the **new** total for the user.
+   */
+  async decrementUserQuota(
+    userId: string,
+    quantity: number,
+  ): Promise<Result<number, Error>> {
+    try {
+      const newValue = await this.commandClient.decrby(
+        `${USER_QUOTA_KEY_PREFIX}${userId}`,
+        quantity,
+      );
+      return Ok(newValue);
+    } catch (error) {
+      this.logger.error(
+        `Failed to decrement user quota for ${userId}: ${error}`,
+      );
       return Err(error instanceof Error ? error : new Error(String(error)));
     }
   }
@@ -198,6 +247,30 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       return Ok(undefined);
     } catch (error) {
       this.logger.error(`Failed to delete hold key for ticket ${ticketId}: ${error}`);
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Set multiple hold keys in a single Redis pipeline for efficiency.
+   * Each key is set with the provided TTL in seconds.
+   * Used after a multi-ticket hold to create all expiration triggers at once.
+   */
+  async setHoldKeysPipeline(
+    ticketIds: string[],
+    ttlSeconds: number,
+  ): Promise<Result<void, Error>> {
+    try {
+      const pipeline = this.commandClient.pipeline();
+      for (const id of ticketIds) {
+        pipeline.set(`${HOLD_KEY_PREFIX}${id}`, '1', 'EX', ttlSeconds);
+      }
+      await pipeline.exec();
+      return Ok(undefined);
+    } catch (error) {
+      this.logger.error(
+        `Failed to set hold keys pipeline for ${ticketIds.length} tickets: ${error}`,
+      );
       return Err(error instanceof Error ? error : new Error(String(error)));
     }
   }

@@ -13,6 +13,15 @@ export interface HoldTicketData {
 }
 
 /**
+ * Aggregated result for a multi-ticket hold request.
+ */
+export interface HoldTicketResultData {
+  tickets: HoldTicketData[];
+  holdCount: number;
+  remainingQuota: number;
+}
+
+/**
  * Shape of the response data when a ticket is cancelled.
  */
 export interface CancelTicketData {
@@ -32,3 +41,7 @@ export interface PaymentResultData {
   totalPrice: number;
 }
 
+export interface TicketTypes {
+  type: TicketTypeEnum;
+  price: number
+}

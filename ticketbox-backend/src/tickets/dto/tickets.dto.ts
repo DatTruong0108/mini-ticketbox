@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsString, IsUUID } from 'class-validator';
+import { IsEnum, IsInt, IsNotEmpty, IsString, IsUUID, Max, Min } from 'class-validator';
 import { BaseResponse } from '../../common/dto/base-response.dto.js';
 
 // ─── Enums ───────────────────────────────────────────────────────
@@ -37,6 +37,18 @@ export class HoldTicketDto {
   @IsEnum(TicketTypeEnum, { message: 'ticketType must be STANDARD or VIP' })
   @IsNotEmpty({ message: 'ticketType must not be empty' })
   ticketType!: TicketTypeEnum;
+
+  @ApiProperty({
+    description: 'Number of tickets to hold (max 5 per user across all types)',
+    minimum: 1,
+    maximum: 5,
+    default: 1,
+    example: 2,
+  })
+  @IsInt({ message: 'quantity must be an integer' })
+  @Min(1, { message: 'quantity must be at least 1' })
+  @Max(5, { message: 'quantity must not exceed 5' })
+  quantity!: number;
 }
 
 /**
@@ -129,6 +141,30 @@ export class HoldTicketDataDto {
 }
 
 /**
+ * Aggregated result returned when one or more tickets are held in a single request.
+ * Contains the list of individual ticket details plus quota metadata.
+ */
+export class HoldTicketResultDataDto {
+  @ApiProperty({
+    description: 'List of tickets that were successfully held',
+    type: [HoldTicketDataDto],
+  })
+  tickets!: HoldTicketDataDto[];
+
+  @ApiProperty({
+    description: 'Number of tickets held in this request',
+    example: 2,
+  })
+  holdCount!: number;
+
+  @ApiProperty({
+    description: 'Remaining quota for this user (out of max 5)',
+    example: 3,
+  })
+  remainingQuota!: number;
+}
+
+/**
  * Data object returned inside the `data` field when a ticket is successfully cancelled.
  * Fully documented for Swagger via @ApiProperty.
  */
@@ -202,6 +238,14 @@ export class HoldTicketResponseDto extends BaseResponse {
   data!: HoldTicketDataDto;
 }
 
+export class HoldTicketResultResponseDto extends BaseResponse {
+  @ApiProperty({
+    description: 'Hold result with ticket list and quota metadata',
+    type: HoldTicketResultDataDto,
+  })
+  data!: HoldTicketResultDataDto;
+}
+
 export class CancelTicketResponseDto extends BaseResponse {
   @ApiProperty({
     description: 'Cancelled ticket details',
@@ -225,4 +269,28 @@ export class TicketErrorResponseDto {
   @ApiProperty({ example: 'Tickets Sold Out', description: 'Error message' })
   message!: string;
 }
+
+export class TicketTypePriceDto {
+  @ApiProperty({
+    description: 'Type of the ticket',
+    enum: TicketTypeEnum,
+    example: TicketTypeEnum.STANDARD,
+  })
+  type!: TicketTypeEnum;
+
+  @ApiProperty({
+    description: 'Price of the ticket in VND',
+    example: 500000,
+  })
+  price!: number;
+}
+
+export class TicketTypesResponseDto extends BaseResponse {
+  @ApiProperty({
+    description: 'List of ticket types and their prices',
+    type: [TicketTypePriceDto],
+  })
+  data!: TicketTypePriceDto[];
+}
+
 

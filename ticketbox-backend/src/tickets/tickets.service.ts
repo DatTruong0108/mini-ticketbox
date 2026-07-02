@@ -9,13 +9,22 @@ import {
   OrderStatusEnum,
 } from './dto/tickets.dto.js';
 
-import { HoldTicketData, CancelTicketData, PaymentResultData } from './interfaces/tickets.interface.js';
+import {
+  HoldTicketData,
+  HoldTicketResultData,
+  CancelTicketData,
+  PaymentResultData,
+  TicketTypes,
+} from './interfaces/tickets.interface.js';
 import { TicketsGateway } from './tickets.gateway.js';
 
 // ─── Constants ───────────────────────────────────────────────────
 
 /** Duration in seconds for which a ticket hold is valid. */
 const HOLD_TTL_SECONDS = 300; // 5 minutes
+
+/** Maximum number of tickets a single user can hold/buy in total. */
+const MAX_TICKETS_PER_USER = 5;
 
 // ─── Service ─────────────────────────────────────────────────────
 
@@ -86,79 +95,124 @@ export class TicketsService implements OnModuleInit {
   // ─── Hold Ticket ────────────────────────────────────────────────
 
   /**
-   * Attempt to hold one available ticket for a user.
+   * Attempt to hold `quantity` available tickets of a given type for a user.
    *
-   * Flow:
-   * 1. Atomic `DECR tickets_available` in Redis (the concurrency gate).
-   * 2. If result < 0 → restore pool, return "Tickets Sold Out".
-   * 3. Find one AVAILABLE ticket of the requested type in PostgreSQL.
-   * 4. Update its status to HOLD, assign userId, set expiresAt.
-   * 5. Create a Redis hold key with 5-minute TTL.
+   * **Dual-Gate Concurrency Control:**
+   * 1. **User Quota Gate** — `INCRBY user_quota:{userId} quantity`. If > MAX → rollback + error.
+   * 2. **Global Pool Gate** — `DECRBY tickets_available quantity`. If < 0 → rollback both + error.
+   * 3. **DB Transaction** — Find exactly `quantity` AVAILABLE tickets, update to HOLD.
+   * 4. **Hold Keys Pipeline** — Create `ticket_hold:{id}` keys with TTL in one round trip.
+   *
+   * Full rollback on any step failure.
    */
   async holdTicket(
     userId: string,
     ticketType: TicketTypeEnum,
-  ): Promise<Result<HoldTicketData, Error>> {
+    quantity: number,
+  ): Promise<Result<HoldTicketResultData, Error>> {
+    // Track which gates have been passed for rollback
+    let userQuotaReserved = false;
+    let globalPoolReserved = false;
+
     try {
-      // Step 1: Atomic decrement — the concurrency gate
-      const decrResult = await this.redisService.decrementPool();
-      if (decrResult.isErr()) {
-        return Err(decrResult.unwrapErr());
+      // ── Step 1: User Quota Gate (Redis) ──────────────────────────
+      const quotaResult = await this.redisService.incrementUserQuota(
+        userId,
+        quantity,
+      );
+      if (quotaResult.isErr()) {
+        return Err(quotaResult.unwrapErr());
       }
 
-      const remaining = decrResult.unwrap();
+      const newQuotaTotal = quotaResult.unwrap();
+      userQuotaReserved = true;
 
-      // Step 2: Check if tickets are still available
-      if (remaining < 0) {
-        // Restore the pool immediately — this request didn't get a slot
-        const restoreResult = await this.redisService.incrementPool();
-        if (restoreResult.isOk()) {
-          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
-        }
-        return Err(new Error('Tickets Sold Out'));
-      }
+      if (newQuotaTotal > MAX_TICKETS_PER_USER) {
+        // Immediate rollback — user is over the limit
+        await this.redisService.decrementUserQuota(userId, quantity);
+        userQuotaReserved = false;
 
-      // Step 3: Find one available ticket of the requested type in the database
-      const ticket = await this.prisma.ticket.findFirst({
-        where: { status: 'AVAILABLE', type: ticketType },
-      });
-
-      if (!ticket) {
-        // Edge case: pool said yes, but no matching DB row (type mismatch / data drift)
-        const restoreResult = await this.redisService.incrementPool();
-        if (restoreResult.isOk()) {
-          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
-        }
+        const currentlyHeld = newQuotaTotal - quantity;
         return Err(
           new Error(
-            `No available ${ticketType} ticket found. Please try a different type.`,
+            `Limit exceeded. Max ${MAX_TICKETS_PER_USER} tickets per user. ` +
+            `You currently have ${currentlyHeld}, requested ${quantity}.`,
           ),
         );
       }
 
-      // Step 4: Update the ticket to HOLD status in PostgreSQL
+      // ── Step 2: Global Pool Gate (Redis) ─────────────────────────
+      const decrResult = await this.redisService.decrementPool(quantity);
+      if (decrResult.isErr()) {
+        // Rollback user quota
+        await this.redisService.decrementUserQuota(userId, quantity);
+        userQuotaReserved = false;
+        return Err(decrResult.unwrapErr());
+      }
+
+      const remaining = decrResult.unwrap();
+      globalPoolReserved = true;
+
+      if (remaining < 0) {
+        // Not enough global tickets — rollback both
+        const restoreResult = await this.redisService.incrementPool(quantity);
+        globalPoolReserved = false;
+        if (restoreResult.isOk()) {
+          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+        }
+
+        await this.redisService.decrementUserQuota(userId, quantity);
+        userQuotaReserved = false;
+
+        return Err(new Error('Tickets Sold Out'));
+      }
+
+      // ── Step 3: Database Transaction (Prisma) ────────────────────
       const expiresAt = new Date(Date.now() + HOLD_TTL_SECONDS * 1000);
 
-      const updatedTicket = await this.prisma.ticket.update({
-        where: { id: ticket.id },
-        data: {
-          status: 'HOLD',
-          userId,
-          expiresAt,
-        },
+      const heldTickets = await this.prisma.$transaction(async (tx) => {
+        // Find exactly `quantity` available tickets of the requested type
+        const availableTickets = await tx.ticket.findMany({
+          where: { status: 'AVAILABLE', type: ticketType },
+          take: quantity,
+        });
+
+        if (availableTickets.length < quantity) {
+          // Not enough tickets of this type in DB — throw to abort the transaction
+          throw new Error(
+            `NOT_ENOUGH_TYPE:${availableTickets.length}`,
+          );
+        }
+
+        const ticketIds = availableTickets.map((t) => t.id);
+
+        // Bulk update all found tickets to HOLD
+        await tx.ticket.updateMany({
+          where: { id: { in: ticketIds } },
+          data: {
+            status: 'HOLD',
+            userId,
+            expiresAt,
+          },
+        });
+
+        // Re-fetch the updated tickets to return full data
+        return tx.ticket.findMany({
+          where: { id: { in: ticketIds } },
+        });
       });
 
-      // Step 5: Create the Redis hold key with TTL
-      const holdResult = await this.redisService.setHoldKey(
-        updatedTicket.id,
+      // ── Step 4: Hold Keys Pipeline (Redis) ───────────────────────
+      const ticketIds = heldTickets.map((t) => t.id);
+      const holdResult = await this.redisService.setHoldKeysPipeline(
+        ticketIds,
         HOLD_TTL_SECONDS,
       );
       if (holdResult.isErr()) {
         this.logger.error(
-          `Failed to set Redis hold key for ticket ${updatedTicket.id}: ${holdResult.unwrapErr().message}`,
+          `Failed to set Redis hold keys for ${ticketIds.length} tickets: ${holdResult.unwrapErr().message}`,
         );
-        // Non-fatal: the DB state is correct; the auto-release will be handled
-        // by a fallback cron or manual cancel if Redis fails
+        // Non-fatal: DB state is correct; fallback cron or manual cancel handles expiry
       }
 
       const formattedExpiresAt = expiresAt.toLocaleString('vi-VN', {
@@ -171,32 +225,77 @@ export class TicketsService implements OnModuleInit {
       });
 
       this.logger.log(
-        `Ticket ${updatedTicket.id} (${ticketType}) held by user ${userId} — expires at ${formattedExpiresAt}`,
+        `${quantity} ticket(s) (${ticketType}) held by user ${userId} — expires at ${formattedExpiresAt}`,
       );
 
-      // Queue the new count (remaining) to be broadcast
+      // Queue the new count to be broadcast
       this.ticketsGateway.queueCountUpdate(remaining);
 
-      return Ok({
-        id: updatedTicket.id,
-        type: updatedTicket.type as TicketTypeEnum,
-        status: updatedTicket.status as TicketStatusEnum,
-        price: updatedTicket.price,
+      // Build response
+      const tickets: HoldTicketData[] = heldTickets.map((t) => ({
+        id: t.id,
+        type: t.type as TicketTypeEnum,
+        status: t.status as TicketStatusEnum,
+        price: t.price,
         userId,
         expiresAt: expiresAt.toISOString(),
+      }));
+
+      return Ok({
+        tickets,
+        holdCount: tickets.length,
+        remainingQuota: MAX_TICKETS_PER_USER - newQuotaTotal,
       });
     } catch (error) {
-      this.logger.error(`holdTicket failed: ${error}`);
-      // Attempt to restore the pool on any unexpected failure
-      try {
-        const restoreResult = await this.redisService.incrementPool();
-        if (restoreResult.isOk()) {
-          this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+      const errMsg =
+        error instanceof Error ? error.message : String(error);
+
+      // Handle the specific DB "not enough of this type" case
+      if (errMsg.startsWith('NOT_ENOUGH_TYPE:')) {
+        const found = parseInt(errMsg.split(':')[1], 10);
+        this.logger.warn(
+          `holdTicket: only ${found} ${ticketType} tickets in DB, needed ${quantity}`,
+        );
+
+        // Rollback both Redis counters
+        if (globalPoolReserved) {
+          const restoreResult =
+            await this.redisService.incrementPool(quantity);
+          if (restoreResult.isOk()) {
+            this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+          }
         }
-      } catch (restoreErr) {
-        this.logger.error(`Failed to restore pool after error: ${restoreErr}`);
+        if (userQuotaReserved) {
+          await this.redisService.decrementUserQuota(userId, quantity);
+        }
+
+        return Err(
+          new Error(
+            `Not enough ${ticketType} tickets available. Only ${found} remaining of this type.`,
+          ),
+        );
       }
-      return Err(error instanceof Error ? error : new Error(String(error)));
+
+      // Unexpected error — attempt full rollback
+      this.logger.error(`holdTicket failed: ${errMsg}`);
+      try {
+        if (globalPoolReserved) {
+          const restoreResult =
+            await this.redisService.incrementPool(quantity);
+          if (restoreResult.isOk()) {
+            this.ticketsGateway.queueCountUpdate(restoreResult.unwrap());
+          }
+        }
+        if (userQuotaReserved) {
+          await this.redisService.decrementUserQuota(userId, quantity);
+        }
+      } catch (rollbackErr) {
+        this.logger.error(
+          `Failed to rollback after error: ${rollbackErr}`,
+        );
+      }
+
+      return Err(error instanceof Error ? error : new Error(errMsg));
     }
   }
 
@@ -211,6 +310,7 @@ export class TicketsService implements OnModuleInit {
    * 3. Revert to AVAILABLE, clear userId and expiresAt.
    * 4. Delete the Redis hold key early.
    * 5. Increment the Redis pool.
+   * 6. Decrement the user's quota counter.
    */
   async cancelTicket(
     ticketId: string,
@@ -265,6 +365,17 @@ export class TicketsService implements OnModuleInit {
         );
       } else {
         this.ticketsGateway.queueCountUpdate(incrResult.unwrap());
+      }
+
+      // Step 6: Decrement the user's quota counter
+      const quotaResult = await this.redisService.decrementUserQuota(
+        userId,
+        1,
+      );
+      if (quotaResult.isErr()) {
+        this.logger.error(
+          `Failed to decrement user quota after cancel for ${userId}: ${quotaResult.unwrapErr().message}`,
+        );
       }
 
       this.logger.log(
@@ -378,7 +489,8 @@ export class TicketsService implements OnModuleInit {
    * Called automatically when a `ticket_hold:{ticketId}` key expires in Redis.
    *
    * If the ticket is still in HOLD status (i.e., payment was NOT completed),
-   * revert it to AVAILABLE and restore the Redis pool slot.
+   * revert it to AVAILABLE, restore the Redis pool slot, and decrement
+   * the user's quota counter.
    *
    * If the ticket has already been SOLD, do nothing.
    */
@@ -406,6 +518,9 @@ export class TicketsService implements OnModuleInit {
         return Ok(undefined);
       }
 
+      // Capture userId before clearing it from the ticket
+      const holdUserId = ticket.userId;
+
       // Revert to AVAILABLE
       await this.prisma.ticket.update({
         where: { id: ticketId },
@@ -426,6 +541,19 @@ export class TicketsService implements OnModuleInit {
         this.ticketsGateway.queueCountUpdate(incrResult.unwrap());
       }
 
+      // Decrement the user's quota counter
+      if (holdUserId) {
+        const quotaResult = await this.redisService.decrementUserQuota(
+          holdUserId,
+          1,
+        );
+        if (quotaResult.isErr()) {
+          this.logger.error(
+            `Expiration handler: failed to decrement user quota for ${holdUserId}: ${quotaResult.unwrapErr().message}`,
+          );
+        }
+      }
+
       this.logger.log(
         `Ticket ${ticketId} hold expired — status reverted to AVAILABLE`,
       );
@@ -438,4 +566,33 @@ export class TicketsService implements OnModuleInit {
       return Err(error instanceof Error ? error : new Error(String(error)));
     }
   }
+
+  /**
+   * Fetch distinct ticket types and their prices.
+   * Optimized database query using distinct and select.
+   *
+   * @returns List of distinct ticket types and their prices
+   */
+  async getTicketTypes(): Promise<Result<TicketTypes[], Error>> {
+    try {
+      const ticketTypes = await this.prisma.ticket.findMany({
+        distinct: ['type'],
+        select: {
+          type: true,
+          price: true,
+        },
+      });
+
+      const formatted = ticketTypes.map((t) => ({
+        type: t.type as TicketTypeEnum,
+        price: t.price,
+      }));
+
+      return Ok(formatted);
+    } catch (error) {
+      this.logger.error(`getTicketTypes failed: ${error}`);
+      return Err(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 }
+
