@@ -34,7 +34,7 @@ export class JwtAuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     try {
       const request = context.switchToHttp().getRequest();
-      const token = this.extractTokenFromHeader(request);
+      const token = this.extractToken(request);
 
       if (!token) {
         throw new UnauthorizedException('Missing access token');
@@ -63,17 +63,19 @@ export class JwtAuthGuard implements CanActivate {
     }
   }
 
-  private extractTokenFromHeader(
-    request: { headers: Record<string, string> },
-  ): string | null {
-    const authorization = request.headers['authorization'];
+  private extractToken(request: any): string | null {
+    // 1. Try to extract from cookie
+    if (request.cookies && request.cookies.accessToken) {
+      return request.cookies.accessToken;
+    }
 
+    // 2. Fallback to Authorization header
+    const authorization = request.headers && request.headers['authorization'];
     if (!authorization) {
       return null;
     }
 
     const [scheme, token] = authorization.split(' ');
-
     if (scheme !== 'Bearer' || !token) {
       return null;
     }

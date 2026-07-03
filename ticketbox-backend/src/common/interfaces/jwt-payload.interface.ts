@@ -12,4 +12,7 @@ export interface JwtPayload {
 
   /** User role for RBAC */
   role: Role;
+
+  /** Whether the user selected Remember Me option */
+  rememberMe?: boolean;
 }

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsNotEmpty, IsString, MaxLength, MinLength, IsBoolean, IsOptional } from 'class-validator';
 import { BaseResponse } from '../../common/dto/base-response.dto.js';
 
 // ─── Request DTOs ────────────────────────────────────────────────
@@ -16,6 +16,15 @@ export class LoginDto {
   @MinLength(3, { message: 'userName must be at least 3 characters' })
   @MaxLength(50, { message: 'userName must not exceed 50 characters' })
   userName!: string;
+
+  @ApiProperty({
+    description: 'Extend token expiration and stay logged in',
+    example: true,
+    required: false,
+  })
+  @IsBoolean({ message: 'rememberMe must be a boolean' })
+  @IsOptional()
+  rememberMe?: boolean;
 }
 
 export class RefreshTokenDto {

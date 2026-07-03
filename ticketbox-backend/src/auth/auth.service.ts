@@ -52,7 +52,7 @@ export class AuthService {
    * 4. Store a bcrypt hash of the refresh token.
    * 5. Return tokens + basic user info.
    */
-  async login(userName: string): Promise<Result<LoginResult, Error>> {
+  async login(userName: string, rememberMe: boolean = false): Promise<Result<LoginResult, Error>> {
     try {
       // Step 1: Find or create user
       const findResult = await this.userService.findByUserName(userName);
@@ -77,6 +77,7 @@ export class AuthService {
         sub: user.id,
         userName: user.userName,
         role: user.role as Role,
+        rememberMe,
       };
 
       const tokensResult = await this.generateTokens(payload);
@@ -152,6 +153,7 @@ export class AuthService {
         sub: payload.sub,
         userName: payload.userName,
         role: payload.role,
+        rememberMe: payload.rememberMe,
       };
 
       const tokensResult = await this.generateTokens(newPayload);

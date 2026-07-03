@@ -3,6 +3,7 @@ import {
   Controller,
   HttpStatus,
   Post,
+  Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
@@ -13,12 +14,12 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { JwtService } from '@nestjs/jwt';
 
 import { AuthService } from './auth.service.js';
 import {
   LoginDto,
-  RefreshTokenDto,
   LoginResponseDto,
   RefreshResponseDto,
   LogoutResponseDto,
@@ -31,30 +32,32 @@ import type { JwtPayload } from '../common/interfaces/jwt-payload.interface.js';
 @ApiTags('Auth')
 @Controller('api/auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly jwtService: JwtService,
+  ) {}
 
   /**
    * POST /api/auth/login
    *
    * Passwordless login / auto-registration.
-   * - If `userName` does not exist → registers a new user with `Role.USER`.
-   * - If `userName` exists → authenticates immediately.
-   * - Returns an access + refresh token pair and basic user info.
+   * Sets accessToken and refreshToken HttpOnly cookies.
    */
   @Post('login')
   @ApiOperation({
     summary: 'Passwordless login or auto-register',
     description:
-      'Provide a unique userName. If the user does not exist, a new account is created automatically. Returns JWT tokens and user info.',
+      'Provide a unique userName and rememberMe option. Sets JWT tokens as HttpOnly cookies.',
   })
-  @ApiOkResponse({ type: LoginResponseDto, description: 'Login successful — tokens returned' })
+  @ApiOkResponse({ type: LoginResponseDto, description: 'Login successful — cookies set' })
   @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Validation error or login failed' })
   async login(
     @Body() dto: LoginDto,
     @Res() res: Response,
   ): Promise<Response> {
     try {
-      const result = await this.authService.login(dto.userName);
+      const rememberMe = dto.rememberMe ?? false;
+      const result = await this.authService.login(dto.userName, rememberMe);
 
       if (result.isErr()) {
         return res.status(HttpStatus.BAD_REQUEST).json({
@@ -65,12 +68,24 @@ export class AuthController {
 
       const data = result.unwrap();
 
+      const cookieOptions: any = {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+      };
+
+      res.cookie('accessToken', data.tokens.accessToken, { ...cookieOptions });
+      res.cookie('refreshToken', data.tokens.refreshToken, {
+        ...cookieOptions,
+        ...(rememberMe ? { maxAge: 7 * 24 * 60 * 60 * 1000 } : { maxAge: 24 * 60 * 60 * 1000 }),
+      });
+
       return res.status(HttpStatus.OK).json({
         statusCode: HttpStatus.OK,
         message: 'Login successful',
-        accessToken: data.tokens.accessToken,
-        refreshToken: data.tokens.refreshToken,
-        user: data.user,
+        data: {
+          user: data.user,
+        },
       });
     } catch (error) {
       return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
@@ -83,39 +98,59 @@ export class AuthController {
   /**
    * POST /api/auth/refresh
    *
-   * Refresh the token pair using a valid refresh token.
-   * Implements token rotation: the old refresh token is invalidated and
-   * a brand-new pair is returned.
+   * Refresh the token pair using a valid refresh token cookie.
    */
   @Post('refresh')
   @ApiOperation({
     summary: 'Refresh access token',
     description:
-      'Provide a valid refresh token to receive a new access + refresh token pair. The old refresh token is invalidated (rotation).',
+      'Reads refresh token from HttpOnly cookies, verifies it, and issues new cookies.',
   })
-  @ApiOkResponse({ type: RefreshResponseDto, description: 'New token pair returned' })
-  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Invalid, expired, or reused refresh token' })
+  @ApiOkResponse({ type: RefreshResponseDto, description: 'New cookies set' })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Invalid or expired refresh token' })
   async refresh(
-    @Body() dto: RefreshTokenDto,
+    @Req() req: Request,
     @Res() res: Response,
   ): Promise<Response> {
     try {
-      const result = await this.authService.refreshTokens(dto.refreshToken);
+      const refreshToken = req.cookies?.refreshToken;
+      if (!refreshToken) {
+        return res.status(HttpStatus.UNAUTHORIZED).json({
+          statusCode: HttpStatus.UNAUTHORIZED,
+          message: 'Refresh token is missing',
+        });
+      }
+
+      const result = await this.authService.refreshTokens(refreshToken);
 
       if (result.isErr()) {
-        return res.status(HttpStatus.BAD_REQUEST).json({
-          statusCode: HttpStatus.BAD_REQUEST,
+        return res.status(HttpStatus.UNAUTHORIZED).json({
+          statusCode: HttpStatus.UNAUTHORIZED,
           message: result.unwrapErr().message,
         });
       }
 
       const tokens = result.unwrap();
 
+      // Decode the payload to retrieve rememberMe
+      const decoded: any = this.jwtService.decode(tokens.refreshToken);
+      const rememberMe = decoded?.rememberMe ?? false;
+
+      const cookieOptions: any = {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+      };
+
+      res.cookie('accessToken', tokens.accessToken, { ...cookieOptions });
+      res.cookie('refreshToken', tokens.refreshToken, {
+        ...cookieOptions,
+        ...(rememberMe ? { maxAge: 7 * 24 * 60 * 60 * 1000 } : { maxAge: 24 * 60 * 60 * 1000 }),
+      });
+
       return res.status(HttpStatus.OK).json({
         statusCode: HttpStatus.OK,
         message: 'Token refreshed successfully',
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
       });
     } catch (error) {
       return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
@@ -128,16 +163,15 @@ export class AuthController {
   /**
    * POST /api/auth/logout
    *
-   * Logout: invalidate the current user's refresh token.
-   * Requires a valid access token in the Authorization header.
+   * Logout: invalidate the current user's refresh token and clear cookies.
    */
   @Post('logout')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('access-token')
   @ApiOperation({
-    summary: 'Logout — revoke refresh token',
+    summary: 'Logout — revoke refresh token and clear cookies',
     description:
-      'Invalidates the stored refresh token for the authenticated user. Requires a valid access token in the Authorization header.',
+      'Clears both access and refresh cookies, and invalidates the session.',
   })
   @ApiOkResponse({ type: LogoutResponseDto, description: 'Logged out successfully' })
   @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Logout failed' })
@@ -154,6 +188,14 @@ export class AuthController {
           message: result.unwrapErr().message,
         });
       }
+
+      const cookieOptions: any = {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+      };
+      res.clearCookie('accessToken', { ...cookieOptions });
+      res.clearCookie('refreshToken', { ...cookieOptions });
 
       return res.status(HttpStatus.OK).json({
         statusCode: HttpStatus.OK,
