@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import axios from "axios";
+import axios from "@/lib/axios";
+import { isAxiosError } from "axios";
 import toast from "react-hot-toast";
-import { AlertCircle, Minus, Plus, Ticket } from "lucide-react";
+import { AlertCircle, Minus, Plus } from "lucide-react";
 
 interface TicketTypeDetail {
   type: string;
@@ -72,30 +73,15 @@ export default function TicketSelection({ ticketDetails, onCancel }: TicketSelec
       return;
     }
 
-    const token =
-      localStorage.getItem("accessToken") ||
-      sessionStorage.getItem("accessToken");
-
-    if (!token) {
-      toast.error("Vui lòng đăng nhập để thực hiện đặt vé!");
-      router.push("/");
-      return;
-    }
-
     try {
       setLoading(true);
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
       
       const payload = {
         ticketType: selectedType,
         quantity: totalSelected,
       };
 
-      const res = await axios.post(`${apiUrl}/tickets/hold`, payload, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const res = await axios.post("/tickets/hold", payload);
 
       if (res.data?.data?.tickets) {
         sessionStorage.setItem("heldTickets", JSON.stringify(res.data.data.tickets));
@@ -106,7 +92,7 @@ export default function TicketSelection({ ticketDetails, onCancel }: TicketSelec
     } catch (err: any) {
       console.error("Hold tickets error:", err);
       let message = "Đã xảy ra lỗi khi giữ vé.";
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         message = err.response.data?.message || err.message;
       } else if (err instanceof Error) {
         message = err.message;

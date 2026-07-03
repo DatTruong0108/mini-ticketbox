@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import axios from "axios";
+import axios from "@/lib/axios";
+import { isAxiosError } from "axios";
 import { LogOut, Flame } from "lucide-react";
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
@@ -34,11 +35,10 @@ export default function EventPage() {
     try {
       setLoading(true);
       setErrorState(null);
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
       
       const [typesRes, availableRes] = await Promise.all([
-        axios.get(`${apiUrl}/tickets/types`),
-        axios.get(`${apiUrl}/tickets/available`),
+        axios.get("/tickets/types"),
+        axios.get("/tickets/available"),
       ]);
 
       const fetchedTypes = typesRes.data?.data;
@@ -70,7 +70,7 @@ export default function EventPage() {
     } catch (err: any) {
       console.error("Fetch data error:", err);
       let message = "Đã xảy ra lỗi khi kết nối tới máy chủ.";
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         const apiMessage = err.response.data?.message;
         const status = err.response.status;
         message = `Lỗi API [Mã lỗi: ${status}]: ${apiMessage || err.message}`;
@@ -126,33 +126,14 @@ export default function EventPage() {
   }, []);
 
   const handleLogout = async () => {
-    const token =
-      localStorage.getItem("accessToken") ||
-      sessionStorage.getItem("accessToken");
-
     try {
-      if (token) {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
-        await axios.post(
-          `${apiUrl}/auth/logout`,
-          {},
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        );
-      }
+      await axios.post("/auth/logout");
     } catch (err) {
       console.error("Logout API error:", err);
     } finally {
-      // Xoá tất cả token và userName khỏi cả 2 storage
-      localStorage.removeItem("accessToken");
-      localStorage.removeItem("refreshToken");
       localStorage.removeItem("userName");
-      sessionStorage.removeItem("accessToken");
-      sessionStorage.removeItem("refreshToken");
       sessionStorage.removeItem("userName");
+      sessionStorage.removeItem("heldTickets");
 
       router.push("/");
     }

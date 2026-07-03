@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import axios from "axios";
+import axios from "@/lib/axios";
+import { isAxiosError } from "axios";
 import toast from "react-hot-toast";
 import { Clock, MapPin, Calendar, AlertTriangle, LogOut, X, CheckCircle } from "lucide-react";
 
@@ -89,31 +90,12 @@ export default function CheckoutPage() {
   }, [isSuccessModalOpen]);
 
   const handleLogout = async () => {
-    const token =
-      localStorage.getItem("accessToken") ||
-      sessionStorage.getItem("accessToken");
-
     try {
-      if (token) {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
-        await axios.post(
-          `${apiUrl}/auth/logout`,
-          {},
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        );
-      }
+      await axios.post("/auth/logout");
     } catch (err) {
       console.error("Logout API error:", err);
     } finally {
-      localStorage.removeItem("accessToken");
-      localStorage.removeItem("refreshToken");
       localStorage.removeItem("userName");
-      sessionStorage.removeItem("accessToken");
-      sessionStorage.removeItem("refreshToken");
       sessionStorage.removeItem("userName");
       sessionStorage.removeItem("heldTickets");
 
@@ -147,30 +129,11 @@ export default function CheckoutPage() {
 
   // Bulk cancel API request
   const handleBulkCancel = async () => {
-    const token =
-      localStorage.getItem("accessToken") ||
-      sessionStorage.getItem("accessToken");
-
-    if (!token) {
-      toast.error("Vui lòng đăng nhập để huỷ vé!");
-      router.push("/");
-      return;
-    }
-
     try {
       setCancelLoading(true);
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
       const ticketIds = heldTickets.map((t) => t.id);
 
-      await axios.post(
-        `${apiUrl}/tickets/cancel`,
-        { ticketIds },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      await axios.post("/tickets/cancel", { ticketIds });
 
       sessionStorage.removeItem("heldTickets");
       toast.success("Huỷ giữ vé thành công!");
@@ -178,7 +141,7 @@ export default function CheckoutPage() {
     } catch (err: any) {
       console.error("Bulk cancel error:", err);
       let message = "Đã xảy ra lỗi khi huỷ giữ vé.";
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         message = err.response.data?.message || err.message;
       } else if (err instanceof Error) {
         message = err.message;
@@ -192,37 +155,18 @@ export default function CheckoutPage() {
 
   // Real Payment API Request
   const handlePayment = async () => {
-    const token =
-      localStorage.getItem("accessToken") ||
-      sessionStorage.getItem("accessToken");
-
-    if (!token) {
-      toast.error("Vui lòng đăng nhập để thanh toán!");
-      router.push("/");
-      return;
-    }
-
     try {
       setPayLoading(true);
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
       const ticketIds = heldTickets.map((t) => t.id);
 
-      await axios.post(
-        `${apiUrl}/tickets/pay`,
-        { ticketIds },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      await axios.post("/tickets/pay", { ticketIds });
 
       sessionStorage.removeItem("heldTickets");
       setIsSuccessModalOpen(true);
     } catch (err: any) {
       console.error("Payment error:", err);
       let message = "Đã xảy ra lỗi khi thanh toán.";
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         message = err.response.data?.message || err.message;
       } else if (err instanceof Error) {
         message = err.message;

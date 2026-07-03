@@ -2,7 +2,8 @@
 
 import { useState, useEffect, FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import axios from "axios";
+import axios from "@/lib/axios";
+import { isAxiosError } from "axios";
 import { Loader2, AlertCircle, Check } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -14,13 +15,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Auto-redirect nếu đã có accessToken trong localStorage hoặc sessionStorage
-  useEffect(() => {
-    const token = localStorage.getItem("accessToken") || sessionStorage.getItem("accessToken");
-    if (token) {
-      router.push("/event");
-    }
-  }, [router]);
+
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -35,20 +30,19 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const { data } = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, { userName: trimmed });
-
-      // Lấy data theo chuẩn BaseResponse của Backend
-      const { accessToken, refreshToken } = data.data || data;
+      await axios.post("/auth/login", {
+        userName: trimmed,
+        rememberMe,
+      });
 
       const storage = rememberMe ? localStorage : sessionStorage;
-      storage.setItem("accessToken", accessToken);
-      storage.setItem("refreshToken", refreshToken);
       storage.setItem("userName", trimmed);
 
+      toast.success("Đăng nhập thành công!");
       router.push("/event");
     } catch (err: unknown) {
       let msg = "Đã có lỗi xảy ra. Vui lòng thử lại sau.";
-      if (axios.isAxiosError(err)) {
+      if (isAxiosError(err)) {
         msg =
           err.response?.data?.message ??
           "Đăng nhập thất bại. Vui lòng thử lại.";
