@@ -14,7 +14,7 @@ export function middleware(request: NextRequest) {
   }
 
   // Logic 2: If user is not logged in, redirect to login page for protected paths
-  if (pathname.startsWith("/event") && !hasToken) {
+  if ((pathname.startsWith("/event/checkout") || pathname.startsWith("/admin")) && !hasToken) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 
@@ -22,5 +22,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/event/:path*"],
+  matcher: ["/event/checkout/:path*", "/admin/:path*"],
 };

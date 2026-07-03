@@ -15,6 +15,7 @@ import TicketSelection from "./_components/TicketSelection";
 export default function EventPage() {
   const router = useRouter();
   const [userName, setUserName] = useState<string>("");
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
   const [minPrice, setMinPrice] = useState<number | null>(null);
   const [ticketDetails, setTicketDetails] = useState<{ type: string; price: number; count: number }[]>([]);
   const [totalAvailable, setTotalAvailable] = useState<number>(0);
@@ -26,9 +27,14 @@ export default function EventPage() {
   useEffect(() => {
     const name =
       localStorage.getItem("userName") ||
-      sessionStorage.getItem("userName") ||
-      "Khách";
-    setUserName(name);
+      sessionStorage.getItem("userName");
+    if (name) {
+      setUserName(name);
+      setIsLoggedIn(true);
+    } else {
+      setUserName("Khách");
+      setIsLoggedIn(false);
+    }
   }, []);
 
   const fetchData = async () => {
@@ -152,13 +158,22 @@ export default function EventPage() {
           </p>
         </div>
 
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2 rounded-lg bg-white/15 px-4 py-2 text-sm font-bold text-white transition-all duration-200 hover:bg-white/25 active:scale-[0.97]"
-        >
-          <LogOut className="h-4 w-4" />
-          Đăng xuất
-        </button>
+        {isLoggedIn ? (
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm font-bold text-white transition-all duration-300 hover:bg-white/20 hover:scale-105 hover:shadow-md active:scale-95 cursor-pointer"
+          >
+            <LogOut className="h-4 w-4" />
+            Đăng xuất
+          </button>
+        ) : (
+          <button
+            onClick={() => router.push("/")}
+            className="flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-bold text-[#34A99D] transition-all duration-300 hover:bg-gray-50 hover:scale-105 hover:shadow-lg hover:shadow-black/10 active:scale-95 cursor-pointer"
+          >
+            Đăng nhập
+          </button>
+        )}
       </header>
 
       {/* ---- Hero Section ---- */}
@@ -209,6 +224,7 @@ export default function EventPage() {
             <TicketSelection
               ticketDetails={ticketDetails}
               onCancel={() => setIsBookingMode(false)}
+              isLoggedIn={isLoggedIn}
             />
           ) : (
             <>

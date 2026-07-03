@@ -16,9 +16,10 @@ interface TicketTypeDetail {
 interface TicketSelectionProps {
   ticketDetails: TicketTypeDetail[];
   onCancel: () => void;
+  isLoggedIn: boolean;
 }
 
-export default function TicketSelection({ ticketDetails, onCancel }: TicketSelectionProps) {
+export default function TicketSelection({ ticketDetails, onCancel, isLoggedIn }: TicketSelectionProps) {
   const router = useRouter();
   const [loading, setLoading] = useState<boolean>(false);
 
@@ -68,6 +69,11 @@ export default function TicketSelection({ ticketDetails, onCancel }: TicketSelec
   };
 
   const handleContinue = async () => {
+    if (!isLoggedIn) {
+      toast.error("Vui lòng đăng nhập để tiếp tục mua vé!");
+      return;
+    }
+
     if (!selectedType || totalSelected === 0) {
       toast.error("Vui lòng chọn số lượng vé!");
       return;
