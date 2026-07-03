@@ -1,0 +1,87 @@
+services:
+  # Database Service
+  postgres:
+    image: postgres:17-alpine
+    container_name: ticketbox-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: tora01082003
+      POSTGRES_DB: ticketbox_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d ticketbox_db" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketbox-network
+
+  # Redis Cache Service
+  redis:
+    image: redis:7-alpine
+    container_name: ticketbox-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    # Enable Keyspace Notifications (Ex) for ticket expiration logic
+    command: redis-server --notify-keyspace-events Ex
+    networks:
+      - ticketbox-network
+
+  # NestJS Backend Application
+  backend:
+    build:
+      context: ./ticketbox-backend
+      dockerfile: Dockerfile
+    container_name: ticketbox-backend
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgresql://postgres:tora01082003@postgres:5432/ticketbox_db?schema=public
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_ACCESS_SECRET=ticketbox-access-secret-key-change-in-prod
+      - JWT_REFRESH_SECRET=ticketbox-refresh-secret-key-change-in-prod
+      - JWT_ACCESS_EXPIRES_IN=15m
+      - JWT_REFRESH_EXPIRES_IN=30d
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - ticketbox-network
+
+  # Next.js Frontend Application
+  frontend:
+    build:
+      context: ./ticketbox-frontend
+      dockerfile: Dockerfile
+      args:
+        # Build argument to embed frontend API URL at build-time
+        - NEXT_PUBLIC_API_URL=http://localhost:3001/api
+    container_name: ticketbox-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:3001/api
+    depends_on:
+      - backend
+    networks:
+      - ticketbox-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  ticketbox-network:
+    driver: bridge
