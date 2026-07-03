@@ -242,6 +242,8 @@ export class TicketsService implements OnModuleInit {
         this.ticketsGateway.queueCountUpdate(ticketsResult.unwrap());
       }
 
+      this.ticketsGateway.emitAdminDashboardRefresh();
+
       // Build response
       const tickets: HoldTicketData[] = heldTickets.map((t) => ({
         id: t.id,
@@ -407,6 +409,8 @@ export class TicketsService implements OnModuleInit {
         `${count} ticket(s) cancelled by user ${userId} — status reverted to AVAILABLE`,
       );
 
+      this.ticketsGateway.emitAdminDashboardRefresh();
+
       return Ok({
         ticketIds,
         cancelledCount: count,
@@ -509,6 +513,8 @@ export class TicketsService implements OnModuleInit {
         status: TicketStatusEnum.SOLD,
       }));
 
+      this.ticketsGateway.emitAdminDashboardRefresh();
+
       return Ok({
         orderId: order.id,
         totalPrice,
@@ -598,6 +604,8 @@ export class TicketsService implements OnModuleInit {
       this.logger.log(
         `Ticket ${ticketId} hold expired — status reverted to AVAILABLE`,
       );
+
+      this.ticketsGateway.emitAdminDashboardRefresh();
 
       return Ok(undefined);
     } catch (error) {

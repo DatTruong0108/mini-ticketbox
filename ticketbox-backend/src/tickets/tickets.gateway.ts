@@ -172,4 +172,19 @@ export class TicketsGateway
       this.logger.error(`Failed to broadcast count update: ${error}`);
     }
   }
+
+  /**
+   * Broadcast a refresh event to all admin clients.
+   */
+  emitAdminDashboardRefresh(): void {
+    try {
+      this.logger.log('Broadcasting admin_dashboard_refresh to all clients');
+      this.server.emit('admin_dashboard_refresh', {
+        statusCode: 200,
+        message: 'Admin dashboard needs refresh',
+      });
+    } catch (error) {
+      this.logger.error(`Failed to emit admin_dashboard_refresh: ${error}`);
+    }
+  }
 }
